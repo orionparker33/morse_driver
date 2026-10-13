@@ -294,22 +294,30 @@ static void morse_spi_initsequence(struct morse_spi *mspi)
 {
 	struct spi_device *spi = mspi->spi;
 
+	/* The training clocks must run with CS deasserted.  Changing SPI_CS_HIGH
+	 * can invert a GPIO CS on kernels without the vendor CS polarity patch.
+	 * Keep the SPI device mode unchanged and suppress CS for this transfer.
+	 */
+	memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
+#if KERNEL_VERSION(6, 1, 0) <= LINUX_VERSION_CODE
+	mspi->t.cs_off = 1;
+	if (morse_spi_xfer(mspi, 18))
+		dev_warn(&spi->dev, "SPI training transfer failed\n");
+	mspi->t.cs_off = 0;
+#else
+	/* Older kernels do not have per-transfer cs_off. */
 	spi->mode |= SPI_CS_HIGH;
 	if (spi_setup(spi) != 0) {
-		/* Just warn; most cards work without it. */
 		dev_warn(&spi->dev, "can't change chip-select polarity\n");
 		spi->mode &= ~SPI_CS_HIGH;
-	} else {
-		/* We will send only 0xFF for training */
-		memset(mspi->data, 0xFF, MM610X_BUF_SIZE);
-		morse_spi_xfer(mspi, 18);
-
-		spi->mode &= ~SPI_CS_HIGH;
-		if (spi_setup(spi) != 0) {
-			/* Wot, we can't get the same setup we had before? */
-			dev_err(&spi->dev, "can't restore chip-select polarity\n");
-		}
+		return;
 	}
+	if (morse_spi_xfer(mspi, 18))
+		dev_warn(&spi->dev, "SPI training transfer failed\n");
+	spi->mode &= ~SPI_CS_HIGH;
+	if (spi_setup(spi) != 0)
+		dev_err(&spi->dev, "can't restore chip-select polarity\n");
+#endif
 }
 
 static void morse_spi_xfer_init(struct morse_spi *mspi)
@@ -1575,8 +1583,6 @@ static int morse_spi_probe(struct spi_device *spi)
 	 */
 #ifdef SPI_CONTROLLER_ENABLE_CS_GPIOD
 	spi->controller->flags |= SPI_CONTROLLER_ENABLE_CS_GPIOD;
-#else
-#warning "SPI_CONTROLLER_ENABLE_CS_GPIOD macro not defined"
 #endif
 #endif
 	morse_spi_xfer_init(mspi);
